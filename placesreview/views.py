@@ -1,4 +1,4 @@
-from django.shortcuts import render
+
 import requests
 from django.conf import settings
 import json
@@ -6,12 +6,10 @@ from django.http.response import HttpResponse
 from placesreview import models
 import math
 from django.db.models import Q
-# Pour automatiquement convertir les modeles django en json
-from django.core import serializers
 import traceback
 
 
-# Create your views here.
+# Views of the API
 
 
 def render_to_json_response(context, status=200):
@@ -26,7 +24,7 @@ def render_to_json_response(context, status=200):
     return ret
 
 
-def isInt(value):
+def is_int(value):
     result = True
     try:
         num = int(value)
@@ -36,35 +34,33 @@ def isInt(value):
         result = False
     return result
 
-def clean_dict(dict):
+
+def clean_dict(dictionary):
     """
     Clean a dictionary by removing all key whose value are None
     """
-    dict = {}
+    dictionary = {}
 
-    for key in dict.keys():
-        if dict[key] is None:
-            del dict[key]
+    for key in dictionary.keys():
+        if dictionary[key] is None:
+            del dictionary[key]
 
-    return dict
+    return dictionary
 
 
 def search_places(request):
     # See https://developers.google.com/places/documentation/search
-    # For documentation of the paramaters. Only parameters here are supported
+    # For documentation of the parameters. Only parameters here are supported
     # but you can always use the extra parameters to pass more
 
     types = None
     location = None
-    radius = None
+    radius = 20
     key = settings.GOOGLE_KEY
-
-    print('dd' + request.GET.get("location"))
+    pagetoken = None
 
     if request.GET.get("location") is not None:
         location = request.GET.get("location")
-
-    print('dd' +location)
 
     if request.GET.get("radius") is not None:
         radius = request.GET.get("radius")
@@ -78,11 +74,15 @@ def search_places(request):
     if location is None:
         return render_to_json_response({"error": "location is required"}, 400)
 
+    if request.GET.get("pagetoken"):
+        pagetoken = request.GET.get("pagetoken")
+
     payload = {
         "types": types,
         "location": location,
         "radius": radius,
-        "key": key
+        "key": key,
+        "pagetoken": pagetoken
 
     }
 
@@ -102,7 +102,6 @@ def search_places(request):
             entity.save()
             entity.types = []
 
-
             for cat in place["types"]:
                 res = models.PlaceType.objects.filter(name=cat)
 
@@ -120,8 +119,8 @@ def search_places(request):
 
             restaurant_type = models.PlaceType.objects.filter(name="restaurant")
 
-            services = ["Principal services"]
-            tastes = ["Reception", "Clean", "Cost", "Quality"]
+            services = settings.DEFAULT_SERVICES
+            tastes = settings.DEFAULT_TASTES
 
             #if restaurant_type in entity.types.all():
               #  pass
@@ -148,17 +147,16 @@ def search_places(request):
         return render_to_json_response({"error": "error while searching"}, 400)
 
 
-
-
 def add_review(request):
-    place_id = None
-    text = ""
+    """
+    Add a review
+    """
 
     place_id = ""
     google_id = ""
     facebook_id = ""
     text = ""
-    service_name = "Principal services"
+    service_name = settings.DEFAULT_SERVICES[0]
     app_id = ""
 
     ratings = []
@@ -169,7 +167,6 @@ def add_review(request):
 
     if request.GET.get("google_user_id") is not None:
         google_id = request.GET.get("google_user_id")
-
 
     if request.GET.get("facebook_user_id") is not None:
         facebook_id = request.GET.get("facebook_user_id")
@@ -183,27 +180,33 @@ def add_review(request):
     if request.GET.get("tastes") is not None:
         tastes = request.GET.get("tastes").split(',')
 
-
     temp = None
     if request.GET.get("ratings") is not None:
         temp = request.GET.get("ratings").split(',')
 
-    ratings = []
+    if len(ratings) != len(tastes):
+        return render_to_json_response({"error": "you should provide a rating for each taste. ratings and tastes "
+                                                 "array should thus be equal."}, 400)
+
     if temp:
         for rating in ratings:
-            if rating and isInt(rating):
+            if rating and is_int(rating):
                 ratings.append(int(request.GET.get("ratings")))
-
-
 
     if request.GET.get("app_id"):
         app_id = int(request.GET.get("app_id"))
 
-
     reviewer = models.Reviewer.objects.filter(Q(google_id=google_id) | Q(facebook_id=facebook_id))
 
-    application = models.Application.objects.filter(name=app_id)
+    if reviewer.count() <= 0:
+        reviewer = models.Reviewer()
+        reviewer.google_id = google_id
+        reviewer.facebook_id = facebook_id
+        reviewer.save()
+    else:
+        reviewer = reviewer[0]
 
+    application = models.Application.objects.filter(name=app_id)
 
     place = models.Place.objects.filter(google_id=place_id)
 
@@ -220,53 +223,62 @@ def add_review(request):
     else:
         application = None
 
-    if reviewer.count() > 0:
-        review = models.Reviewer()
-        reviewer = reviewer[0]
+    try:
+        if reviewer:
+            review = models.Review()
+            review.reviewer = reviewer
 
-        review.reviewer = reviewer
+            if application:
+                review.application = application
 
-        if application:
-            review.application = application
+            review.text = text
 
-        review.text = text
+            review.service = service
+            review.save()
 
-        review.service = service
-        review.save()
+            num = 0.
+            for i in range(len(ratings)):
 
-        num = 0.
-        for i in range(ratings):
+                score_by_taste = models.ReviewScoreByTaste()
+                score_by_taste.review = review
+                score_by_taste.rating = ratings[i]
+                taste = models.TasteToBeReviewed.objects.filter(name=tastes[i], service=service)
+                if taste.count() > 0:
+                    score_by_taste.taste = taste[0]
+                num += ratings[i]
 
-            score_by_taste = models.ReviewScoreByTaste()
-            score_by_taste.review = review
-            score_by_taste.rating = ratings[i]
-            taste = models.TasteToBeReviewed.objects.filter(name=tastes[i], service=service)
-            if taste.count() > 0:
-                score_by_taste.taste = taste[0]
-            num += ratings[i]
+                score_by_taste.save()
 
-            score_by_taste.save()
+            if len(ratings) > 0:
+                review.score = num/len(ratings)
 
-        review.score = num/ratings.length()
-
-        review.save()
+            review.save()
+    except Exception as e:
+        traceback.print_exc()
+        return render_to_json_response({"error": "error while adding review"}, 400)
 
     return render_to_json_response({"success": True})
 
 
 def get_review(request):
+    """
+    Get a review
+    """
     if request.GET.get("place_id") is not None:
         place_id = request.GET.get("place_id")
 
+    qs = models.Review.objects.filter(service__place__google_id=place_id).order_by('created_on')
 
-    qs = models.Review.objects.filter(service__place__pk=place_id)
+    if request.GET.get("app_id"):
+        qs = qs.filter(created_by=request.GET.get("app_id"))
+
     data = []
 
     for review in qs:
 
         ratings = []
 
-        rats = models.ReviewScoreByTaste(review__pk=review.pk)
+        rats = models.ReviewScoreByTaste.objects.filter(review__pk=review.pk)
 
         for rat in rats:
             ratings.append({
@@ -278,8 +290,8 @@ def get_review(request):
             "reviewer_google_id": review.reviewer.google_id,
             "reviewer_facebook_id": review.reviewer.facebook_id,
             "text": review.text,
-            "score": review.score,
-            "service": review.service,
+            "score": float(review.score),
+            "service": review.service.name,
 
             "ratings": ratings
         }

@@ -60,12 +60,11 @@ class Review(models.Model):
 
     reviewer = models.ForeignKey(Reviewer)
     created_on = models.DateTimeField(auto_now_add=True)
-    created_by = models.ForeignKey(Application, null=True)
-    #last_modified_on = models.DateTimeField(auto_now=True)
     # The application which has updated this review
+    created_by = models.ForeignKey(Application, null=True)
     text = models.TextField()
     # general score given by this review
-    score = models.DecimalField(decimal_places=2, max_digits=19)
+    score = models.DecimalField(default=0, decimal_places=2, max_digits=19)
     service = models.ForeignKey(PlaceService)
 
 
